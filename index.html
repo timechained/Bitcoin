@@ -96,6 +96,7 @@
         .live-price .price {
             font-size: 32px; font-weight: 800;
             font-family: 'JetBrains Mono', monospace; letter-spacing: -1px;
+            transition: color 0.3s ease;
         }
         .live-price .change {
             font-size: 13px; font-family: 'JetBrains Mono', monospace; margin-top: 2px;
@@ -211,6 +212,8 @@
         .js-plotly-plot .plotly .modebar { top: 8px !important; right: 8px !important; }
         .js-plotly-plot .plotly .modebar-btn { color: var(--text-muted) !important; }
         .js-plotly-plot .plotly .modebar-btn:hover { color: var(--bitcoin) !important; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .live-pulse { animation: pulse 1.5s ease-in-out infinite; }
     </style>
 </head>
 <body>
@@ -226,7 +229,10 @@
                 </div>
             </div>
             <div class="live-price">
-                <div class="price" id="live-price">–</div>
+                <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px">
+                    <span id="live-dot" style="width:8px;height:8px;border-radius:50%;background:#4a4a5c;display:inline-block;"></span>
+                    <div class="price" id="live-price">–</div>
+                </div>
                 <div class="change" id="live-change">–</div>
                 <div class="meta" id="live-meta">Lade...</div>
             </div>
@@ -570,8 +576,93 @@ async function tryLiveData() {
             price, date: new Date(ts),
         }));
     } catch(e) {
-        console.log('Live API nicht verfügbar, verwende eingebettete Daten.', e.message);
+        console.log('CoinGecko History nicht verfügbar, verwende eingebettete Daten.', e.message);
         return null;
+    }
+}
+
+// === BINANCE WEBSOCKET LIVE TICKER ===
+let lastLivePrice = null;
+
+function startLiveTicker() {
+    try {
+        const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+        
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            const price = parseFloat(data.p);
+            const prevPrice = lastLivePrice || price;
+            lastLivePrice = price;
+            
+            // Activate live dot
+            const dot = document.getElementById('live-dot');
+            if (dot) { dot.style.background = 'var(--green)'; dot.classList.add('live-pulse'); }
+            // Update header price
+            const priceEl = document.getElementById('live-price');
+            priceEl.textContent = '$' + price.toLocaleString('en-US', {maximumFractionDigits: 0});
+            
+            // Flash green/red on change
+            if (price > prevPrice) {
+                priceEl.style.color = 'var(--green)';
+            } else if (price < prevPrice) {
+                priceEl.style.color = 'var(--red)';
+            }
+            setTimeout(() => { priceEl.style.color = 'var(--text-primary)'; }, 300);
+            
+            // Update drawdown
+            const ath = 126200;
+            const dd = ((price - ath) / ath * 100);
+            const ddEl = document.getElementById('stat-drawdown');
+            if (ddEl) ddEl.textContent = dd.toFixed(1) + '%';
+            
+            // Update meta
+            const metaEl = document.getElementById('live-meta');
+            if (metaEl) {
+                const now = new Date();
+                metaEl.textContent = now.toLocaleTimeString('de-DE') + ' · Binance Live';
+            }
+        };
+        
+        ws.onerror = function() {
+            console.log('Binance WebSocket nicht verfügbar, verwende CoinGecko Spot-Preis.');
+            fetchSpotPrice();
+        };
+        
+        ws.onclose = function() {
+            // Reconnect after 5 seconds
+            setTimeout(startLiveTicker, 5000);
+        };
+        
+    } catch(e) {
+        console.log('WebSocket nicht unterstützt, verwende CoinGecko Spot-Preis.');
+        fetchSpotPrice();
+    }
+}
+
+// Fallback: CoinGecko simple price (if WebSocket fails)
+async function fetchSpotPrice() {
+    try {
+        const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true');
+        if (!r.ok) return;
+        const j = await r.json();
+        const price = j.bitcoin.usd;
+        const change24h = j.bitcoin.usd_24h_change;
+        
+        document.getElementById('live-price').textContent = '$' + price.toLocaleString('en-US', {maximumFractionDigits: 0});
+        
+        const ce = document.getElementById('live-change');
+        ce.textContent = (change24h >= 0 ? '+' : '') + change24h.toFixed(2) + '% (24h)';
+        ce.className = 'change ' + (change24h >= 0 ? 'positive' : 'negative');
+        
+        document.getElementById('live-meta').textContent = new Date().toLocaleTimeString('de-DE') + ' · CoinGecko Spot';
+        
+        // Update drawdown
+        const ath = 126200;
+        const dd = ((price - ath) / ath * 100);
+        document.getElementById('stat-drawdown').textContent = dd.toFixed(1) + '%';
+        
+    } catch(e) {
+        console.log('CoinGecko Spot auch nicht verfügbar.', e.message);
     }
 }
 
@@ -581,13 +672,16 @@ async function init() {
     PL = fitPowerLaw(DATA);
     console.log(`Power Law: a=${PL.a.toFixed(4)}, b=${PL.b.toFixed(4)}, σ=${PL.std.toFixed(4)}`);
 
-    if (live) document.getElementById('live-meta').textContent += ' (Live)';
+    if (live) document.getElementById('live-meta').textContent += ' (CoinGecko Tages)';
 
     renderPL();
     renderCycles();
     renderATHChart();
     updateStats();
     renderTable();
+    
+    // Start live price ticker
+    startLiveTicker();
 }
 
 init();
