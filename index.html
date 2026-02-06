@@ -800,9 +800,10 @@ function renderATHChart() {
 function updateStats() {
     const {a, b, std} = PL;
     const last = DATA[DATA.length-1];
-    const price = last.price;
-    const floor = plPrice(last.days, FLOOR.a, FLOOR.b);
-    const median = plPrice(last.days, a, b);
+    const price = lastLivePrice || last.price;
+    const todayDays = Math.round((Date.now() - GENESIS_MS) / DAY_MS);
+    const floor = plPrice(todayDays, FLOOR.a, FLOOR.b);
+    const median = plPrice(todayDays, a, b);
 
     const lastH = HALVINGS[3];
     const daysH = Math.floor((Date.now() - lastH.date) / DAY_MS);
@@ -920,8 +921,24 @@ function startLiveTicker() {
             const data = JSON.parse(event.data);
             const price = parseFloat(data.p);
             const prevPrice = lastLivePrice || price;
+            const isFirst = !lastLivePrice;
             lastLivePrice = price;
-            
+
+            // On first live price, inject into DATA and update chart
+            if (isFirst && DATA && DATA.length) {
+                const now = new Date();
+                const todayDays = Math.round((now - GENESIS) / DAY_MS);
+                const last = DATA[DATA.length - 1];
+                if (last.days === todayDays) {
+                    last.price = price;
+                    last.date = now;
+                } else if (todayDays > last.days) {
+                    DATA.push({ days: todayDays, price, date: now });
+                }
+                renderPL(false);
+                updateStats();
+            }
+
             // Activate live dot
             const dot = document.getElementById('live-dot');
             if (dot) { dot.style.background = 'var(--green)'; dot.classList.add('live-pulse'); }
@@ -1020,6 +1037,25 @@ async function init() {
 
     // Start live price ticker
     startLiveTicker();
+
+    // Periodically inject live price into DATA so chart stays current
+    setInterval(() => {
+        if (!lastLivePrice || !DATA || !DATA.length) return;
+        const now = new Date();
+        const todayDays = Math.round((now - GENESIS) / DAY_MS);
+        const last = DATA[DATA.length - 1];
+        if (last.days === todayDays) {
+            // Update today's entry with live price
+            last.price = lastLivePrice;
+            last.date = now;
+        } else if (todayDays > last.days) {
+            // Append today as new data point
+            DATA.push({ days: todayDays, price: lastLivePrice, date: now });
+        }
+        // Re-render chart without animation, and update stats
+        renderPL(false);
+        updateStats();
+    }, 30000); // every 30 seconds
 
     // Resize canvas on window resize
     let resizeTimer;
